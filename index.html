@@ -83,7 +83,7 @@
     return frame;
   }
   async function decryptFile(path) {
-    const buf = new Uint8Array(await (await fetch(path, {cache: 'force-cache'})).arrayBuffer());
+    const buf = new Uint8Array(await (await fetch(path, {cache: path.includes('?v=') ? 'force-cache' : 'no-store'})).arrayBuffer());
     const iv = buf.slice(0, 12), ct = buf.slice(12);
     return new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, KEY, ct));
   }
@@ -131,7 +131,7 @@
     const msg = document.getElementById('gate-msg'); msg.textContent = '';
     try {
       const pw = document.getElementById('pw').value;
-      const salt = new Uint8Array(await (await fetch('enc/salt')).arrayBuffer());
+      const salt = new Uint8Array(await (await fetch('enc/salt', {cache: 'no-store'})).arrayBuffer());
       const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
       KEY = await crypto.subtle.deriveKey({name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
       SLIDES = JSON.parse(new TextDecoder().decode(await decryptFile('enc/manifest.bin')));
