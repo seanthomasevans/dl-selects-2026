@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Lanois prints</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; overflow: hidden; cursor: none; }
+  body.ui { cursor: default; }
+  .layer { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transition: opacity .9s ease; overflow: hidden; }
+  .layer.on { opacity: 1; }
+  .layer img, .layer video { max-width: 100vw; max-height: 100vh; width: auto; height: auto; object-fit: contain; display: block; background: #000; }
+  .layer .title { font: 700 clamp(28px, 4.2vw, 84px)/1.12 "Helvetica Neue", Helvetica, Arial, sans-serif; letter-spacing: .06em; text-transform: uppercase; color: #f2f2f2; text-align: center; padding: 0 8vw; max-width: 84vw; }
+  #hud { position: fixed; left: 22px; bottom: 18px; font-family: ui-monospace, Menlo, monospace; font-size: 18px; color: #9a9a9a; opacity: 1; pointer-events: none; z-index: 3; text-shadow: 0 1px 2px #000; }
+  #hud b { color: #ddd; font-weight: 500; }
+  #help { position: fixed; right: 22px; bottom: 18px; font-size: 14px; color: #6f6f6f; opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 3; }
+  body.ui #help { opacity: 1; }
+  #start { position: fixed; inset: 0; display: grid; place-items: center; background: #000; z-index: 9; }
+  #gate { display: grid; gap: 10px; justify-items: center; }
+  #pw { font: 15px -apple-system, "Helvetica Neue", Helvetica, sans-serif; color: #ddd; background: #000; border: 1px solid #444; border-radius: 4px; padding: 10px 14px; width: 220px; text-align: center; outline: none; }
+  #pw:focus { border-color: #888; }
+  #gate-msg { font-size: 12px; color: #9a3b3b; min-height: 16px; }
+  #start button { font: 15px -apple-system, "Helvetica Neue", Helvetica, sans-serif; color: #ddd; background: transparent; border: 1px solid #444; border-radius: 4px; padding: 12px 22px; cursor: pointer; }
+  #start button:focus-visible { border-color: #fff; }
+  #start.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="start">
+  <form id="gate" autocomplete="off">
+    <input id="pw" type="password" placeholder="password" autofocus>
+    <button id="go" type="submit">start</button>
+    <div id="gate-msg"></div>
+  </form>
+</div>
+<div class="layer" id="a"></div>
+<div class="layer" id="b"></div>
+<div id="hud"></div>
+<div id="help">← → next · space pause · f fullscreen · i info · esc exit</div>
+<script>
+(() => {
+  let SLIDES = [];
+  const CACHE = new Map();   // src -> blob URL (decrypted)
+  let KEY = null;
+  const qs = new URLSearchParams(location.search);
+  const IMAGE_S = parseFloat(qs.get('image') || '10');   // seconds per print
+  const LOOP_S = parseFloat(qs.get('loop') || '20');     // seconds per loop
+  const layers = [document.getElementById('a'), document.getElementById('b')];
+  let i = -1, cur = 0, timer = null, paused = false;
+  const hud = document.getElementById('hud');
+
+  function el(s) {
+    if (s.type === 'title') { const d = document.createElement('div'); d.className = 'title'; d.textContent = s.text; return d; }
+    if (s.type === 'image') { const im = new Image(); im.src = CACHE.get(s.src) || ''; im.alt = ''; im.decoding = 'async'; im.onerror = () => show(i + 1); return straighten(fit(im, s), s); }
+    const v = document.createElement('video'); v.src = CACHE.get(s.src) || ''; v.muted = true; v.loop = true; v.playsInline = true; v.preload = 'auto';
+    return straighten(fit(v, s), s);
+  }
+  // Small masters (crops) would otherwise sit at native size in the middle of the screen.
+  // Rule: anything under 55% of the frame height is scaled to ~80% of it, capped at 2.5x, never past the frame.
+  function fit(node, s) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let z = s.zoom || 0;
+    if (!z && s.w && s.h && s.h < 0.55 * vh) z = Math.min(2.5, (0.8 * vh) / s.h, vw / s.w);
+    if (z && s.w) { node.style.width = Math.min(s.w * z, vw) + 'px'; node.style.height = 'auto'; }
+    return node;
+  }
+  // Straighten: the media is rotated and pushed in INSIDE a clipping frame of its own display size,
+  // so the visible result is a straight rectangle with no tilted edges and no black corners.
+  function straighten(node, s) {
+    if (!(s.rotate && s.w && s.h)) return node;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let z = s.zoom || 0;
+    if (!z && s.h < 0.55 * vh) z = Math.min(2.5, (0.8 * vh) / s.h, vw / s.w);
+    if (!z) z = Math.min(vw / s.w, vh / s.h, 1);            // contain, never upscale
+    const dw = Math.min(s.w * z, vw), dh = dw * s.h / s.w;
+    const r = Math.abs(s.rotate) * Math.PI / 180, a = s.w / s.h;
+    const push = s.push_in || (Math.cos(r) + Math.sin(r) * Math.max(a, 1 / a));
+    const frame = document.createElement('div');
+    frame.style.cssText = `width:${dw}px;height:${dh}px;overflow:hidden;position:relative;background:#000`;
+    node.style.cssText = `width:100%;height:100%;display:block;max-width:none;max-height:none;transform:rotate(${s.rotate}deg) scale(${push.toFixed(4)});transform-origin:center`;
+    frame.appendChild(node);
+    return frame;
+  }
+  async function decryptFile(path) {
+    const buf = new Uint8Array(await (await fetch(path, {cache: 'force-cache'})).arrayBuffer());
+    const iv = buf.slice(0, 12), ct = buf.slice(12);
+    return new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, KEY, ct));
+  }
+  async function load(s) {
+    if (!s || s.type === 'title' || CACHE.has(s.src)) return;
+    const bytes = await decryptFile(s.src);
+    CACHE.set(s.src, URL.createObjectURL(new Blob([bytes], {type: s.mime})));
+  }
+  function preload(n) { load(SLIDES[(n + SLIDES.length) % SLIDES.length]).catch(() => {}); }
+  async function show(n) {
+    if (!SLIDES.length) return;
+    i = (n + SLIDES.length) % SLIDES.length;
+    const s = SLIDES[i];
+    const want = i;
+    try { await load(s); } catch (e) { return show(n + 1); }
+    if (i !== want) return;
+    const next = layers[1 - cur], prev = layers[cur];
+    const node = el(s);
+    next.replaceChildren(node);
+    const v = next.querySelector('video'); if (v) v.play().catch(() => {});
+    // Fade in only once the new frame can paint (decoded image / first video frame), so a slow
+    // load never shows a black fade. Hard cap so a stalled file cannot stop the show.
+    const media = node.tagName === 'DIV' && node.firstElementChild && node.className !== 'title' ? node.firstElementChild : node;
+    const ready = s.type === 'title' ? Promise.resolve()
+      : s.type === 'image'
+      ? (media.decode ? media.decode().catch(() => {}) : Promise.resolve())
+      : new Promise(res => { media.addEventListener('loadeddata', res, {once: true}); });
+    const myIndex = i;
+    Promise.race([ready, new Promise(res => setTimeout(res, 1500))]).then(() => {
+      if (i !== myIndex) return;                 // user already moved on
+      next.classList.add('on'); prev.classList.remove('on');
+    });
+    clearTimeout(prev._clear); clearTimeout(next._clear);
+    prev._clear = setTimeout(() => { if (prev.classList.contains('on')) return; const pv = prev.querySelector('video'); if (pv) { pv.pause(); pv.removeAttribute('src'); pv.load(); } prev.replaceChildren(); }, 2600);
+    cur = 1 - cur;
+    hud.innerHTML = `<b>${i + 1} / ${SLIDES.length}</b> · ${s.section}${s.type !== 'title' ? ' · ' + s.id : ''}${s.note ? ' · ' + s.note : ''}${s.seconds ? ' · ' + s.seconds + ' s' : ''}${paused ? ' · paused' : ''}`;
+    preload(i + 1);
+    arm();
+  }
+  const TITLE_S = parseFloat(qs.get('title') || '6');
+  function arm() { clearTimeout(timer); if (paused) return; const s = SLIDES[i]; const d = s.dwell != null ? s.dwell : (s.type === 'title' ? TITLE_S : s.type === 'image' ? IMAGE_S : LOOP_S); timer = setTimeout(() => show(i + 1), d * 1000); }
+  function fs() { const d = document.documentElement; if (document.fullscreenElement) return; try { const r = (d.requestFullscreen || d.webkitRequestFullscreen).call(d); if (r && r.catch) r.catch(() => {}); } catch (e) {} }
+  document.getElementById('gate').onsubmit = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const msg = document.getElementById('gate-msg'); msg.textContent = '';
+    try {
+      const pw = document.getElementById('pw').value;
+      const salt = new Uint8Array(await (await fetch('enc/salt')).arrayBuffer());
+      const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+      KEY = await crypto.subtle.deriveKey({name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256'}, base, {name: 'AES-GCM', length: 256}, false, ['decrypt']);
+      SLIDES = JSON.parse(new TextDecoder().decode(await decryptFile('enc/manifest.bin')));
+    } catch (err) { msg.textContent = 'wrong password'; KEY = null; return; }
+    document.getElementById('start').classList.add('hidden'); fs(); show(0); preload(1); preload(2);
+  };
+  let uiTimer = null;
+  function ui() { document.body.classList.add('ui'); clearTimeout(uiTimer); uiTimer = setTimeout(() => document.body.classList.remove('ui'), 2500); }
+  document.addEventListener('mousemove', ui);
+  document.addEventListener('keydown', (e) => {
+    if (document.getElementById('start').classList.contains('hidden') === false) return;   // typing the password
+    if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); show(i + 1); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); show(i - 1); }
+    else if (e.key === ' ') { e.preventDefault(); paused = !paused; arm(); hud.innerHTML = hud.innerHTML.replace(' · paused', '') + (paused ? ' · paused' : ''); ui(); }
+    else if (e.key.toLowerCase() === 'f') { fs(); }
+    else if (e.key.toLowerCase() === 'i') { document.body.classList.toggle('ui'); clearTimeout(uiTimer); }   // key help on/off; the counter is always on
+    else if (e.key === 'Home') { show(0); }
+  });
+  document.addEventListener('click', (e) => { if (e.target.closest('#start')) return; if (document.getElementById('start').classList.contains('hidden') && i >= 0) show(i + 1); });
+})();
+</script>
+</body>
+</html>
