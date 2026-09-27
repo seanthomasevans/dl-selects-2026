@@ -89,18 +89,32 @@
     const iv = buf.slice(0, 12), ct = buf.slice(12);
     return new Uint8Array(await crypto.subtle.decrypt({name: 'AES-GCM', iv}, KEY, ct));
   }
+  const INFLIGHT = new Map();   // src -> promise, so a slide is never downloaded twice at once
   async function load(s) {
     if (!s || s.type === 'title' || CACHE.has(s.src)) return;
-    const bytes = await decryptFile(s.src);
-    CACHE.set(s.src, URL.createObjectURL(new Blob([bytes], {type: s.mime})));
+    if (INFLIGHT.has(s.src)) return INFLIGHT.get(s.src);
+    const p = (async () => {
+      let bytes;
+      try { bytes = await decryptFile(s.src); }
+      catch (e) { await new Promise(r => setTimeout(r, 600)); bytes = await decryptFile(s.src); }   // one retry (phones drop big fetches)
+      CACHE.set(s.src, URL.createObjectURL(new Blob([bytes], {type: s.mime})));
+    })();
+    INFLIGHT.set(s.src, p);
+    try { await p; } finally { INFLIGHT.delete(s.src); }
   }
   function preload(n) { load(SLIDES[(n + SLIDES.length) % SLIDES.length]).catch(() => {}); }
+  // Keep decrypted media only for the slides around the current one; a phone cannot hold the whole reel in memory.
+  function evict(n) {
+    const keep = new Set([-2, -1, 0, 1, 2].map(d => SLIDES[(n + d + SLIDES.length) % SLIDES.length].src));
+    for (const [src, url] of CACHE) if (!keep.has(src)) { URL.revokeObjectURL(url); CACHE.delete(src); }
+  }
   async function show(n) {
     if (!SLIDES.length) return;
     i = (n + SLIDES.length) % SLIDES.length;
     const s = SLIDES[i];
     const want = i;
-    try { await load(s); } catch (e) { return show(n + 1); }
+    if (!CACHE.has(s.src) && s.type !== 'title') hud.innerHTML = `<b>${i + 1} / ${SLIDES.length}</b> · loading …`;
+    try { await load(s); } catch (e) { if (i !== want) return; return show(n + 1); }
     if (i !== want) return;
     const next = layers[1 - cur], prev = layers[cur];
     const node = el(s);
@@ -122,7 +136,7 @@
     prev._clear = setTimeout(() => { if (prev.classList.contains('on')) return; const pv = prev.querySelector('video'); if (pv) { pv.pause(); pv.removeAttribute('src'); pv.load(); } prev.replaceChildren(); }, 2600);
     cur = 1 - cur;
     hud.innerHTML = `<b>${i + 1} / ${SLIDES.length}</b> · ${s.section}${s.type !== 'title' ? ' · ' + s.id : ''}${s.note ? ' · ' + s.note : ''}${s.seconds ? ' · ' + s.seconds + ' s' : ''}${paused ? ' · paused' : ''}`;
-    preload(i + 1);
+    evict(i); preload(i + 1); preload(i + 2);
     arm();
   }
   const TITLE_S = parseFloat(qs.get('title') || '6');
